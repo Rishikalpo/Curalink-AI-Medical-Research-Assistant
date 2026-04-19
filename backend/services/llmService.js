@@ -1,16 +1,16 @@
 const axios = require("axios")
 
-const PROVIDER = process.env.LLM_PROVIDER || "groq"
-const MODEL = process.env.LLM_MODEL || "mixtral-8x7b-32768"
+const MODEL_PRIMARY = process.env.LLM_MODEL || "llama-3.1-8b-instant"
+const MODEL_FALLBACK = "llama-3.1-8b-instant"
 
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 // ─────────────────────────────────────────
-// 🔥 STRONG PROMPT BUILDER
+// 🔥 STRONG PROMPT
 // ─────────────────────────────────────────
 const buildPrompt = (disease, query, publications, trials) => {
   const pubText = publications.slice(0, 5).map((p, i) =>
-    `[${i + 1}] ${p.title} (${p.year})`
+    `[${i + 1}] ${p.title} (${p.year || "?"})`
   ).join("\n")
 
   const trialText = trials.slice(0, 3).map((t, i) =>
@@ -18,18 +18,13 @@ const buildPrompt = (disease, query, publications, trials) => {
   ).join("\n")
 
   return `
-You are an expert medical research assistant.
+You are a medical research assistant.
 
 STRICT RULES:
-- Use ONLY the provided data
-- DO NOT hallucinate or invent facts
-- Be specific to ${disease}
-- Cite sources using [1], [2]
-- ALWAYS return valid JSON only
+- Use ONLY provided data
+- DO NOT hallucinate
+- Return ONLY valid JSON
 - NEVER return empty arrays
-
-TASK:
-Analyze the research and extract meaningful insights.
 
 DISEASE: ${disease}
 QUESTION: ${query}
@@ -40,57 +35,45 @@ ${pubText}
 CLINICAL TRIALS:
 ${trialText}
 
-OUTPUT JSON (STRICT FORMAT):
+OUTPUT JSON (STRICT):
 {
-  "overview": "Write 2–3 sentence summary of latest treatments",
+  "overview": "2-3 sentence summary",
   "research_insights": [
     {
-      "finding": "Key medical finding",
-      "evidence": "What study shows",
+      "finding": "clear insight",
+      "evidence": "supporting detail",
       "source": "[1]"
-    },
-    {
-      "finding": "Another important insight",
-      "evidence": "Supporting detail",
-      "source": "[2]"
-    },
-    {
-      "finding": "Third insight",
-      "evidence": "Supporting detail",
-      "source": "[3]"
     }
   ],
   "clinical_trials": [
     {
-      "title": "Trial name",
+      "title": "trial name",
       "status": "RECRUITING",
-      "summary": "What the trial is testing"
+      "summary": "short summary"
     }
   ],
-  "gaps_and_limitations": "What is still unknown",
-  "clinical_implications": "What this means for treatment",
-  "sources": ["[1]", "[2]", "[3]"]
+  "gaps_and_limitations": "what is missing",
+  "clinical_implications": "what doctors should do",
+  "sources": ["[1]"]
 }
 
 IMPORTANT:
-- Provide at least 3 research_insights
-- Provide at least 1 clinical trial
-- Do NOT return empty arrays
+- At least 3 research_insights
+- At least 1 clinical_trial
+- Do NOT leave arrays empty
 `
 }
 
 // ─────────────────────────────────────────
-// 🔥 ROBUST JSON PARSER
+// ✅ SAFE PARSER
 // ─────────────────────────────────────────
 const parse = (text) => {
   try {
-    let clean = text
-      .replace(/```json/g, "")
-      .replace(/```/g, "")
-      .trim()
+    let clean = text.replace(/```json|```/g, "").trim()
 
     const start = clean.indexOf("{")
     const end = clean.lastIndexOf("}")
+
     if (start === -1 || end === -1) return null
 
     clean = clean.slice(start, end + 1)
@@ -102,24 +85,35 @@ const parse = (text) => {
 }
 
 // ─────────────────────────────────────────
-// 🔥 FALLBACK (SAFE)
+// 🔥 GROQ CALL (with fallback model)
 // ─────────────────────────────────────────
-const fallback = (disease, query, publications, trials) => ({
-  overview: `Showing available research for ${query} in ${disease}.`,
-  research_insights: publications.slice(0, 3).map((p, i) => ({
-    finding: p.title,
-    evidence: `See source [${i + 1}]`,
-    source: `[${i + 1}]`
-  })),
-  clinical_trials: trials.slice(0, 2).map((t) => ({
-    title: t.title,
-    status: t.status,
-    summary: t.summary?.slice(0, 120)
-  })),
-  gaps_and_limitations: "LLM unavailable",
-  clinical_implications: "",
-  sources: []
-})
+const callGroq = async (model, prompt) => {
+  return axios.post(
+    GROQ_URL,
+    {
+      model,
+      messages: [
+        {
+          role: "system",
+          content: "You are a precise medical research assistant that outputs JSON only."
+        },
+        {
+          role: "user",
+          content: prompt
+        }
+      ],
+      temperature: 0.1,
+      max_tokens: 1024,
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      timeout: 30000,
+    }
+  )
+}
 
 // ─────────────────────────────────────────
 // MAIN FUNCTION
@@ -128,26 +122,16 @@ const generateInsights = async (disease, query, publications, trials) => {
   const prompt = buildPrompt(disease, query, publications, trials)
 
   try {
-    const res = await axios.post(
-      GROQ_URL,
-      {
-        model: MODEL,
-        messages: [
-          { role: "system", content: "You are a precise medical research assistant." },
-          { role: "user", content: prompt }
-        ],
-        temperature: 0.1,
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        timeout: 30000,
-      }
-    )
+    // 🔥 Try primary model
+    let res
+    try {
+      res = await callGroq(MODEL_PRIMARY, prompt)
+    } catch (err) {
+      console.warn("[LLM primary failed → switching model]")
+      res = await callGroq(MODEL_FALLBACK, prompt)
+    }
 
-    const text = res.data.choices?.[0]?.message?.content || ""
+    const text = res.data?.choices?.[0]?.message?.content || ""
     const parsed = parse(text)
 
     if (parsed) return parsed
@@ -155,8 +139,20 @@ const generateInsights = async (disease, query, publications, trials) => {
     throw new Error("Invalid JSON")
 
   } catch (err) {
-    console.warn("[LLM fallback]", err.message)
-    return fallback(disease, query, publications, trials)
+    console.warn("[LLM fallback]", err.response?.data || err.message)
+
+    return {
+      overview: `Showing research results for ${query} in ${disease}.`,
+      research_insights: publications.slice(0, 3).map((p, i) => ({
+        finding: p.title,
+        evidence: `Source [${i + 1}]`,
+        source: `[${i + 1}]`
+      })),
+      clinical_trials: trials.slice(0, 2),
+      gaps_and_limitations: "LLM unavailable",
+      clinical_implications: "",
+      sources: []
+    }
   }
 }
 
