@@ -1,4 +1,4 @@
-// ResultPanel.jsx — FINAL PREMIUM VERSION
+// ResultPanel.jsx — FINAL FIXED VERSION (stable sources + premium UI)
 
 import MetaBar from './MetaBar'
 import OverviewCard from './OverviewCard'
@@ -13,16 +13,14 @@ export default function ResultPanel({ entry }) {
 
   const { meta, insights, topPublications, clinicalTrials } = data
 
-  // Merge sources
-  const sources = insights?.sources?.length
-    ? insights.sources
-    : (topPublications || []).slice(0, 8).map((p, i) => ({
-        index: i + 1,
-        title: p.title,
-        year: p.year,
-        source: p.source,
-        url: p.url,
-      }))
+  // ✅ ALWAYS use structured publications for reliable sources
+  const sources = (topPublications || []).slice(0, 8).map((p, i) => ({
+    index: i + 1,
+    title: p.title || 'Untitled',
+    year: p.year,
+    source: p.source,
+    url: p.url,
+  }))
 
   return (
     <div className="relative space-y-6 animate-fade-in">
@@ -39,11 +37,8 @@ export default function ResultPanel({ entry }) {
         <OverviewCard insights={insights} meta={meta} />
 
         {/* Insights + Trials */}
-        <div className="
-          grid gap-6 lg:grid-cols-2
-          items-start
-        ">
-          <InsightsList insights={insights} />
+        <div className="grid gap-6 lg:grid-cols-2 items-start">
+          <InsightsList insights={inssetsSafe(insights)} />
           <TrialsList trials={clinicalTrials} />
         </div>
 
@@ -60,4 +55,14 @@ export default function ResultPanel({ entry }) {
       </div>
     </div>
   )
+}
+
+// 🔒 small safety helper (prevents UI crashes if LLM returns bad structure)
+function inssetsSafe(insights) {
+  return {
+    ...insights,
+    research_insights: Array.isArray(insights?.research_insights)
+      ? insights.research_insights
+      : [],
+  }
 }

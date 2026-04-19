@@ -1,7 +1,7 @@
 const axios = require("axios")
 
 const MODEL_PRIMARY = process.env.LLM_MODEL || "llama-3.1-8b-instant"
-const MODEL_FALLBACK = "llama-3.1-8b-instant"
+const MODEL_FALLBACK = "gemma2-9b-it"
 
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
