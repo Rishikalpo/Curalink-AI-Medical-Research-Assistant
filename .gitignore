@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Env files
+.env
+.env.*
+backend/.env
+frontend/.env
+
+# Build outputs
+dist/
+build/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+
+# Local DB / data
+mongodb-data/
+
+# Model/cache artifacts
+backend/.model_cache/
+*.gguf
+
+# Vite cache
+.vite/
