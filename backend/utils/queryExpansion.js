@@ -1,4 +1,4 @@
-// utils/queryExpansion.js — FINAL OPTIMIZED VERSION
+// utils/queryExpansion.js — FINAL PRODUCTION VERSION (SMART + STRUCTURED)
 
 const DISEASE_SYNONYMS = {
   "parkinson's disease": ["parkinsonism", "PD"],
@@ -10,9 +10,9 @@ const DISEASE_SYNONYMS = {
 
 const QUERY_SYNONYMS = {
   "deep brain stimulation": ["DBS", "neurostimulation"],
-  "treatment": ["therapy", "management"],
-  "vitamin d": ["cholecalciferol"],
-  "exercise": ["physical activity"],
+  "treatment": ["therapy", "management", "latest treatment"],
+  "vitamin d": ["cholecalciferol", "supplementation"],
+  "exercise": ["physical activity", "rehabilitation"],
 };
 
 // ─────────────────────────────────────────
@@ -22,58 +22,119 @@ const norm = (s) => (s || "").toLowerCase().trim();
 
 const findSynonyms = (input, map) => {
   const key = norm(input);
+
   if (map[key]) return map[key];
 
   for (const [k, v] of Object.entries(map)) {
     if (key.includes(k) && k.length > 3) return v;
   }
+
   return [];
 };
 
 const orGroup = (terms) => {
   const unique = [...new Set(terms.filter(Boolean))];
-  if (unique.length === 0) return "";
+  if (!unique.length) return "";
   return unique.length === 1 ? unique[0] : `(${unique.join(" OR ")})`;
 };
 
 // ─────────────────────────────────────────
-// Main function
+// 🔥 INTENT DETECTION
 // ─────────────────────────────────────────
-const expandQuery = ({ disease = "", query = "" }) => {
+const detectIntent = (query) => {
+  const q = norm(query);
+
+  if (q.includes("trial") || q.includes("study")) return "trial";
+  if (q.includes("vitamin") || q.includes("diet") || q.includes("exercise")) return "lifestyle";
+  if (q.includes("treatment") || q.includes("therapy")) return "treatment";
+
+  return "general";
+};
+
+// ─────────────────────────────────────────
+// MAIN FUNCTION
+// ─────────────────────────────────────────
+const expandQuery = ({
+  disease = "",
+  query = "",
+  patientName = "",
+  location = "",
+}) => {
   disease = disease || "general medicine";
   query = query || "treatment";
+
+  const diseaseNorm = norm(disease);
+  const queryNorm = norm(query);
 
   const diseaseSynonyms = findSynonyms(disease, DISEASE_SYNONYMS).slice(0, 5);
   const querySynonyms = findSynonyms(query, QUERY_SYNONYMS).slice(0, 5);
 
-  const baseQuery = `${query} ${disease}`;
+  const intent = detectIntent(query);
 
-  const queryPart = orGroup([query, ...querySynonyms]);
-  const diseasePart = orGroup([disease, ...diseaseSynonyms]);
+  // ─────────────────────────────────────────
+  // 🔥 FORCE disease-aware query
+  // ─────────────────────────────────────────
+  const queryPart = orGroup([queryNorm, ...querySynonyms]);
+  const diseasePart = orGroup([diseaseNorm, ...diseaseSynonyms]);
 
-  const expandedQuery = `${queryPart} AND ${diseasePart}`;
+  let expandedQuery = `${queryPart} AND ${diseasePart}`;
 
-  const pubmedQuery = `(${[query, ...querySynonyms]
-    .map(t => `"${t}"[Title/Abstract]`)
-    .join(" OR ")}) AND (${[disease, ...diseaseSynonyms]
-    .map(t => `"${t}"[Title/Abstract]`)
-    .join(" OR ")})`;
+  // ─────────────────────────────────────────
+  // 🔥 INTENT-BASED ENRICHMENT
+  // ─────────────────────────────────────────
+  if (intent === "treatment") {
+    expandedQuery += " AND (treatment OR therapy OR management)";
+  }
 
+  if (intent === "trial") {
+    expandedQuery += " AND (clinical trial OR randomized trial OR study)";
+  }
+
+  if (intent === "lifestyle") {
+    expandedQuery += " AND (supplement OR diet OR lifestyle OR nutrition)";
+  }
+
+  // ─────────────────────────────────────────
+  // 🔥 PubMed Query (high precision)
+  // ─────────────────────────────────────────
+  const pubmedQuery = `
+    (${[queryNorm, ...querySynonyms]
+      .map(t => `"${t}"[Title/Abstract]`)
+      .join(" OR ")})
+    AND
+    (${[diseaseNorm, ...diseaseSynonyms]
+      .map(t => `"${t}"[Title/Abstract]`)
+      .join(" OR ")})
+  `.replace(/\s+/g, " ").trim();
+
+  // ─────────────────────────────────────────
+  // 🔥 Keywords for ranking
+  // ─────────────────────────────────────────
   const stopWords = new Set([
     "the","and","or","in","of","for","with","to","on","at","by"
   ]);
 
-  const keywords = `${query} ${disease} ${querySynonyms.join(" ")} ${diseaseSynonyms.join(" ")}`
+  const keywords = `${queryNorm} ${diseaseNorm} ${querySynonyms.join(" ")} ${diseaseSynonyms.join(" ")}`
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, " ")
     .split(/\s+/)
     .filter(w => w.length > 3 && !stopWords.has(w));
 
+  // ─────────────────────────────────────────
+  // 🔥 Structured context (for personalization)
+  // ─────────────────────────────────────────
+  const context = {
+    patientName: patientName || null,
+    location: location || null,
+  };
+
   return {
-    baseQuery,
+    baseQuery: `${queryNorm} ${diseaseNorm}`,
     expandedQuery,
     pubmedQuery,
     keywords: [...new Set(keywords)],
+    intent,
+    context, // 🔥 NEW (important)
   };
 };
 
