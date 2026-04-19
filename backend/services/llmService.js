@@ -1,21 +1,27 @@
 const axios = require("axios")
 
-const MODEL_PRIMARY = process.env.LLM_MODEL || "llama-3.1-8b-instant"
+const MODEL_PRIMARY = process.env.LLM_MODEL || "llama3-8b-8192"
 const MODEL_FALLBACK = "gemma2-9b-it"
 
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 // ─────────────────────────────────────────
-// 🔥 STRONG PROMPT
+// 🔥 CONTEXT-AWARE PROMPT
 // ─────────────────────────────────────────
-const buildPrompt = (disease, query, publications, trials) => {
-  const pubText = publications.slice(0, 5).map((p, i) =>
+const buildPrompt = (disease, query, publications, trials, history = []) => {
+  const pubText = publications.slice(0, 4).map((p, i) =>
     `[${i + 1}] ${p.title} (${p.year || "?"})`
   ).join("\n")
 
-  const trialText = trials.slice(0, 3).map((t, i) =>
+  const trialText = trials.slice(0, 2).map((t, i) =>
     `[T${i + 1}] ${t.title} (${t.status})`
   ).join("\n")
+
+  const contextText = history
+    .filter(m => m.role === "user")
+    .slice(-2)
+    .map(m => `Previous: ${m.meta?.query || m.content} (${m.meta?.disease || disease})`)
+    .join("\n")
 
   return `
 You are a medical research assistant.
@@ -23,11 +29,15 @@ You are a medical research assistant.
 STRICT RULES:
 - Use ONLY provided data
 - DO NOT hallucinate
+- Always personalize to the disease
+- If question is generic, interpret it in context of the disease
 - Return ONLY valid JSON
-- NEVER return empty arrays
 
-DISEASE: ${disease}
-QUESTION: ${query}
+CONTEXT:
+${contextText || "None"}
+
+CURRENT DISEASE: ${disease}
+CURRENT QUESTION: ${query}
 
 PUBLICATIONS:
 ${pubText}
@@ -35,37 +45,32 @@ ${pubText}
 CLINICAL TRIALS:
 ${trialText}
 
-OUTPUT JSON (STRICT):
+OUTPUT JSON:
 {
-  "overview": "2-3 sentence summary",
+  "overview": "",
   "research_insights": [
     {
-      "finding": "clear insight",
-      "evidence": "supporting detail",
+      "finding": "",
+      "evidence": "",
       "source": "[1]"
     }
   ],
   "clinical_trials": [
     {
-      "title": "trial name",
-      "status": "RECRUITING",
-      "summary": "short summary"
+      "title": "",
+      "status": "",
+      "summary": ""
     }
   ],
-  "gaps_and_limitations": "what is missing",
-  "clinical_implications": "what doctors should do",
-  "sources": ["[1]"]
+  "gaps_and_limitations": "",
+  "clinical_implications": "",
+  "sources": []
 }
-
-IMPORTANT:
-- At least 3 research_insights
-- At least 1 clinical_trial
-- Do NOT leave arrays empty
 `
 }
 
 // ─────────────────────────────────────────
-// ✅ SAFE PARSER
+// ✅ SAFE PARSER (robust)
 // ─────────────────────────────────────────
 const parse = (text) => {
   try {
@@ -78,6 +83,9 @@ const parse = (text) => {
 
     clean = clean.slice(start, end + 1)
 
+    // fix trailing commas
+    clean = clean.replace(/,\s*}/g, "}")
+
     return JSON.parse(clean)
   } catch {
     return null
@@ -85,7 +93,7 @@ const parse = (text) => {
 }
 
 // ─────────────────────────────────────────
-// 🔥 GROQ CALL (with fallback model)
+// 🔥 GROQ CALL (fallback-safe)
 // ─────────────────────────────────────────
 const callGroq = async (model, prompt) => {
   return axios.post(
@@ -95,15 +103,16 @@ const callGroq = async (model, prompt) => {
       messages: [
         {
           role: "system",
-          content: "You are a precise medical research assistant that outputs JSON only."
+          content:
+            "You are a precise medical research assistant. Always output JSON only."
         },
         {
           role: "user",
           content: prompt
         }
       ],
-      temperature: 0.1,
-      max_tokens: 1024,
+      temperature: 0.0, // 🔥 more factual
+      max_tokens: 900,
     },
     {
       headers: {
@@ -116,18 +125,24 @@ const callGroq = async (model, prompt) => {
 }
 
 // ─────────────────────────────────────────
-// MAIN FUNCTION
+// MAIN FUNCTION (FINAL)
 // ─────────────────────────────────────────
-const generateInsights = async (disease, query, publications, trials) => {
-  const prompt = buildPrompt(disease, query, publications, trials)
+const generateInsights = async (
+  disease,
+  query,
+  publications,
+  trials,
+  history = [] // 🔥 IMPORTANT
+) => {
+  const prompt = buildPrompt(disease, query, publications, trials, history)
 
   try {
-    // 🔥 Try primary model
     let res
+
     try {
       res = await callGroq(MODEL_PRIMARY, prompt)
     } catch (err) {
-      console.warn("[LLM primary failed → switching model]")
+      console.warn("[LLM primary failed → fallback model]")
       res = await callGroq(MODEL_FALLBACK, prompt)
     }
 
@@ -146,12 +161,12 @@ const generateInsights = async (disease, query, publications, trials) => {
       research_insights: publications.slice(0, 3).map((p, i) => ({
         finding: p.title,
         evidence: `Source [${i + 1}]`,
-        source: `[${i + 1}]`
+        source: `[${i + 1}]`,
       })),
       clinical_trials: trials.slice(0, 2),
       gaps_and_limitations: "LLM unavailable",
       clinical_implications: "",
-      sources: []
+      sources: [],
     }
   }
 }

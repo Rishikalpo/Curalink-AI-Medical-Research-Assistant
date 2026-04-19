@@ -1,5 +1,3 @@
-// controllers/queryController.js — FINAL PERFORMANCE OPTIMIZED VERSION
-
 const { expandQuery } = require("../utils/queryExpansion");
 const { fetchPubMedArticles } = require("../services/pubmedService");
 const { fetchOpenAlexArticles } = require("../services/openalexService");
@@ -21,12 +19,12 @@ const inferDiseaseFromHistory = (messages) => {
 };
 
 // ─────────────────────────────────────────
-// MAIN QUERY HANDLER
+// MAIN QUERY HANDLER (FINAL)
 // ─────────────────────────────────────────
 const handleQuery = async (req, res) => {
   const startTime = Date.now();
 
-  const { userId, query, page = 1, limit = 8 } = req.body;
+  const { userId, query, limit = 8 } = req.body;
   let disease = (req.body.disease || "").trim();
 
   if (!userId) {
@@ -47,7 +45,10 @@ const handleQuery = async (req, res) => {
 
     const history = chat.messages;
 
-    // ── Infer disease if missing
+    // 🔥 Detect follow-up
+    const isFollowUp = !disease;
+
+    // ── Infer disease from history
     if (!disease) {
       disease = inferDiseaseFromHistory(history) || "general medicine";
     }
@@ -56,12 +57,12 @@ const handleQuery = async (req, res) => {
     const { expandedQuery, pubmedQuery, keywords } =
       expandQuery({ disease, query });
 
-    // ── Parallel fetch
+    // ── Parallel data fetch (optimized)
     const [pubmedRes, openalexRes, trialsRes] =
       await Promise.allSettled([
-        fetchPubMedArticles(pubmedQuery, 80),
-        fetchOpenAlexArticles(expandedQuery, 80),
-        fetchClinicalTrials(disease, query, 20, keywords),
+        fetchPubMedArticles(pubmedQuery, 60),
+        fetchOpenAlexArticles(expandedQuery, 60),
+        fetchClinicalTrials(disease, query, 15, keywords),
       ]);
 
     const pubmed = pubmedRes.status === "fulfilled" ? pubmedRes.value : [];
@@ -90,7 +91,8 @@ const handleQuery = async (req, res) => {
       topPublications = [...pubmed, ...openalex].slice(0, 8);
     }
 
-    // ── Reduce load for LLM (🔥 critical optimization)
+    // 🔥 Reduce LLM load (fast + relevant)
+    const llmPubs = topPublications.slice(0, 3);
     const topTrials = trials.slice(0, 2);
 
     let insights;
@@ -98,8 +100,9 @@ const handleQuery = async (req, res) => {
       insights = await generateInsights(
         disease,
         query,
-        topPublications.slice(0, 2), // 🔥 reduced
-        topTrials                    // 🔥 reduced
+        llmPubs,
+        topTrials,
+        history.slice(-4) // ✅ CONTEXT PASSED
       );
     } catch (err) {
       console.warn("[LLM fallback]", err.message);
@@ -107,15 +110,33 @@ const handleQuery = async (req, res) => {
         overview: "LLM unavailable.",
         research_insights: [],
         clinical_trials: [],
+        sources: [],
       };
     }
 
     // ── Save chat history
     chat.messages.push(
-      { role: "user", content: query, meta: { disease, timestamp: new Date() } },
-      { role: "assistant", content: insights.overview || "Response generated" }
+      {
+        role: "user",
+        content: query,
+        meta: {
+          disease,
+          query,
+          timestamp: new Date(),
+        },
+      },
+      {
+        role: "assistant",
+        content: insights.overview || "Response generated",
+        meta: {
+          disease,
+          query,
+          timestamp: new Date(),
+        },
+      }
     );
 
+    // Keep last 60 messages
     if (chat.messages.length > 60) {
       chat.messages = chat.messages.slice(-60);
     }
@@ -130,6 +151,7 @@ const handleQuery = async (req, res) => {
       meta: {
         disease,
         query,
+        diseaseInferredFromHistory: isFollowUp, // 🔥 UI + context flag
         totalPublicationsFetched: pubmed.length + openalex.length,
         totalTrialsFetched: trials.length,
         processingTimeMs: elapsed,
@@ -176,9 +198,6 @@ const clearChatHistory = async (req, res) => {
   }
 };
 
-// ─────────────────────────────────────────
-// EXPORTS
-// ─────────────────────────────────────────
 module.exports = {
   handleQuery,
   getChatHistory,
